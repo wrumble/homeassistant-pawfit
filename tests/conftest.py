@@ -56,6 +56,7 @@ class FakePawfit:
         self.fail_activity = False
         self.coordinates = {}
         self.reject_login = False
+        self.login_limit = None
         self.reject_locations = False
         self.fail_next_location_with_403 = False
         self.location_hangs = False  # True: location requests time out
@@ -84,7 +85,10 @@ class FakePawfit:
             return AiohttpClientMockResponse(method, url, json=payload)
 
         if endpoint == "login":
-            if self.reject_login:
+            if self.reject_login or (
+                self.login_limit is not None
+                and self.login_number >= self.login_limit
+            ):
                 return ok({"success": False})
             self.login_number += 1
             return ok(

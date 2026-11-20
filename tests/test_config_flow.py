@@ -113,6 +113,46 @@ async def test_auth_failure_at_setup_starts_reauth(hass, pawfit):
     )
 
 
+async def test_setup_uses_the_login_accepted_by_the_config_flow(hass, pawfit):
+    pawfit.login_limit = 1
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_USER},
+        data={"username": "spare@example.com", "password": "fake-password"},
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] == "create_entry"
+    assert pawfit.count("login") == 1
+    assert result["result"].state is config_entries.ConfigEntryState.LOADED
+    assert pawfit.count("listpetinvitee") == 1
+    assert "sessionId" not in result["result"].data
+
+
+async def test_reauth_uses_the_new_session_without_logging_in_again(hass, pawfit):
+    pawfit.login_limit = 1
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="u1",
+        data={"username": "a", "password": "old", "userId": "u1"},
+    )
+    entry.add_to_hass(hass)
+    form = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_REAUTH, "entry_id": entry.entry_id},
+        data=entry.data,
+    )
+    result = await hass.config_entries.flow.async_configure(
+        form["flow_id"], {"username": "a", "password": "new"}
+    )
+    await hass.async_block_till_done()
+
+    assert result["reason"] == "reauth_successful"
+    assert pawfit.count("login") == 1
+    assert entry.state is config_entries.ConfigEntryState.LOADED
+    assert entry.data == {"username": "a", "password": "new", "userId": "u1"}
+
+
 async def test_user_form_and_real_login_do_not_store_session_token(hass, pawfit):
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
