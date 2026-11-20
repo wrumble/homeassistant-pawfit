@@ -5,6 +5,7 @@
     "@dansbaker"
   ],
   "config_flow": true,
+  "dependencies": ["http"],
   "documentation": "https://github.com/dansbaker/homeassistant-pawfit#readme",
   "integration_type": "hub",
   "iot_class": "cloud_polling",

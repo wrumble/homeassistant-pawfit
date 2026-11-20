@@ -12,6 +12,7 @@ from homeassistant.util import dt as dt_util
 from .pawfit_api import PawfitApiClient
 from .device_tracker import PawfitDataUpdateCoordinator
 from .const import DOMAIN
+from .dogs_feed import DogsView
 from .exceptions import PawfitAuthenticationError, PawfitError
 from .session_handoff import take_authenticated_client
 
@@ -76,5 +77,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up the Pawfit integration (empty for UI-only)."""
+    """Register the read-only SofaPilot view once per HA instance."""
+    hass.http.register_view(DogsView(hass))
     return True

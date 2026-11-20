@@ -4,6 +4,17 @@ import math
 import time
 
 
+def coordinate(value, minimum, maximum):
+    """Accept finite coordinates, including zero; reject malformed payload values."""
+    if isinstance(value, bool):
+        return None
+    try:
+        value = float(value)
+        return value if math.isfinite(value) and minimum <= value <= maximum else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def battery_code(value):
     if isinstance(value, bool):
         return None

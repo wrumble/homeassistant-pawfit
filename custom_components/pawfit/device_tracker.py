@@ -12,7 +12,8 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.util import dt as dt_util
 
 from .exceptions import PawfitAuthenticationError
-from .helpers import charging, mode_remaining
+from .helpers import charging, coordinate, mode_remaining
+from .dogs_feed import register_dog
 from .const import (
     DOMAIN,
     UPDATE_INTERVAL_SECONDS,
@@ -51,17 +52,6 @@ def fix_time(tracker_data):
         dt_util.utc_from_timestamp(value)
         return value
     except (TypeError, ValueError, OverflowError, OSError):
-        return None
-
-
-def coordinate(value, minimum, maximum):
-    """Accept finite coordinates, including zero; reject malformed payload values."""
-    if isinstance(value, bool):
-        return None
-    try:
-        value = float(value)
-        return value if math.isfinite(value) and minimum <= value <= maximum else None
-    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -531,6 +521,7 @@ class PawfitDeviceTracker(TrackerEntity):
         self._attr_longitude = None
         self._attr_location_accuracy = None
         self._attr_charging = None
+        self._feed_dog = None
 
     @property
     def charging(self):
@@ -573,8 +564,10 @@ class PawfitDeviceTracker(TrackerEntity):
         data = (self._coordinator.data or {}).get(str(self._tracker_id), {})
         data_cached = data.get("data_cached", False)
         position_cached = data.get("position_cached", False)
+        identity = {"sofapilot_dog_id": self.registry_entry.id} if self.registry_entry else {}
         if fix is None:
             return {
+                **identity,
                 "last_seen": None,
                 "position_age_minutes": None,
                 "stale": True,
@@ -582,6 +575,7 @@ class PawfitDeviceTracker(TrackerEntity):
                 "position_cached": position_cached,
             }
         return {
+            **identity,
             "data_cached": data_cached,
             "position_cached": position_cached,
             "last_seen": dt_util.utc_from_timestamp(fix).isoformat(),
@@ -595,6 +589,8 @@ class PawfitDeviceTracker(TrackerEntity):
             if self._coordinator.data
             else {}
         )
+        if self._feed_dog is not None:
+            self._feed_dog.observe(data, self._coordinator.last_update_success)
         self._attr_latitude = coordinate(data.get("latitude"), -90, 90)
         self._attr_longitude = coordinate(data.get("longitude"), -180, 180)
         self._attr_location_accuracy = coordinate(data.get("accuracy"), 0, 10000000)
@@ -612,6 +608,7 @@ class PawfitDeviceTracker(TrackerEntity):
     async def async_added_to_hass(self):
         """When entity is added to hass."""
         await super().async_added_to_hass()
+        self._feed_dog = register_dog(self, self._tracker["name"])
         self._update_attrs()
         # Register for coordinator updates
         self.async_on_remove(
