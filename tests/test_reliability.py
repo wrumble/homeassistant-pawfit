@@ -11,7 +11,7 @@ from custom_components.pawfit.const import DOMAIN
 from custom_components.pawfit.device_tracker import coordinate, fix_time
 from custom_components.pawfit.helpers import battery_level, charging
 from custom_components.pawfit.pawfit_api import calculate_api_sign
-from .conftest import advance
+from .conftest import MockConfigEntry, advance
 from .test_rate_limit import entity_id, locate_entities, press
 
 
@@ -174,6 +174,17 @@ async def test_zero_coordinates_are_valid(hass, freezer, pawfit, setup_entry):
     assert tracker.attributes["longitude"] == 0
 
 
+async def test_first_untimed_position_is_unknown_even_when_collar_responds(hass, pawfit):
+    pawfit.coordinates["1001"] = {"utcDateTime": None}
+    entry = MockConfigEntry(domain=DOMAIN, data={"username": "a", "password": "b"})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+
+    assert hass.states.get(entity_id(hass, "device_tracker", "11")).state == "unavailable"
+    assert hass.states.get(entity_id(hass, "sensor", "11_last_update")).state == "unknown"
+    assert hass.states.get(entity_id(hass, "sensor", "11_battery")).state == "80"
+
+
 @pytest.mark.parametrize("bad_position", ["out_of_order", "invalid", "no_timestamp"])
 async def test_last_good_position_survives_bad_fixes(
     hass, freezer, pawfit, setup_entry, bad_position
@@ -196,12 +207,14 @@ async def test_last_good_position_survives_bad_fixes(
             "no_timestamp": None,
         }[bad_position],
     }
+    pawfit.power["1001"] = 42
     await advance(hass, freezer, 61)
     tracker = hass.states.get(tracker_id)
     assert (tracker.attributes["latitude"], tracker.attributes["longitude"]) == (10, 20)
     assert tracker.attributes["position_cached"] is True
     assert tracker.attributes["data_cached"] is False
     assert hass.states.get(last_seen_id).state == previous_last_seen
+    assert hass.states.get(entity_id(hass, "sensor", "11_battery")).state == "42"
 
     pawfit.coordinates["1001"] = {
         "latitude": 12, "longitude": 22, "utcDateTime": good_fix + 120

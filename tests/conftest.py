@@ -55,6 +55,7 @@ class FakePawfit:
         self.fail_stop = set()
         self.fail_activity = False
         self.coordinates = {}
+        self.power = {}
         self.reject_login = False
         self.login_limit = None
         self.reject_locations = False
@@ -125,7 +126,7 @@ class FakePawfit:
                                     "utcDateTime": self._fix(tid),
                                     **self.coordinates.get(tid, {}),
                                 },
-                                "power": 80,
+                                "power": self.power.get(tid, 80),
                                 "signal": -70,
                             },
                             "model": "TR3",
