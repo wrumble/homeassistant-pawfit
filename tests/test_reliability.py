@@ -173,6 +173,45 @@ async def test_zero_coordinates_are_valid(hass, freezer, pawfit, setup_entry):
     assert tracker.attributes["longitude"] == 0
 
 
+@pytest.mark.parametrize("bad_position", ["out_of_order", "invalid", "no_timestamp"])
+async def test_last_good_position_survives_bad_fixes(
+    hass, freezer, pawfit, setup_entry, bad_position
+):
+    tracker_id = entity_id(hass, "device_tracker", "11")
+    last_seen_id = entity_id(hass, "sensor", "11_last_update")
+    good_fix = int(time.time())
+    pawfit.coordinates["1001"] = {
+        "latitude": 10, "longitude": 20, "utcDateTime": good_fix
+    }
+    await advance(hass, freezer, 61)
+    previous_last_seen = hass.states.get(last_seen_id).state
+
+    pawfit.coordinates["1001"] = {
+        "latitude": "malformed" if bad_position == "invalid" else 11,
+        "longitude": 21,
+        "utcDateTime": {
+            "out_of_order": good_fix - 60,
+            "invalid": good_fix + 60,
+            "no_timestamp": None,
+        }[bad_position],
+    }
+    await advance(hass, freezer, 61)
+    tracker = hass.states.get(tracker_id)
+    assert (tracker.attributes["latitude"], tracker.attributes["longitude"]) == (10, 20)
+    assert tracker.attributes["position_cached"] is True
+    assert tracker.attributes["data_cached"] is False
+    assert hass.states.get(last_seen_id).state == previous_last_seen
+
+    pawfit.coordinates["1001"] = {
+        "latitude": 12, "longitude": 22, "utcDateTime": good_fix + 120
+    }
+    await advance(hass, freezer, 61)
+    tracker = hass.states.get(tracker_id)
+    assert (tracker.attributes["latitude"], tracker.attributes["longitude"]) == (12, 22)
+    assert tracker.attributes["position_cached"] is False
+    assert hass.states.get(last_seen_id).state != previous_last_seen
+
+
 @pytest.mark.parametrize(
     "value", [None, "bad", float("nan"), float("inf"), -1, 10**1000]
 )
