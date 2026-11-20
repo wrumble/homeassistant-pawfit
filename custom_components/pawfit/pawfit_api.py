@@ -91,6 +91,15 @@ class PawfitApiClient:
         async with self._auth_lock:
             return await self._async_login_unlocked()
 
+    def matches_authenticated_account(self, account_id, username, password):
+        """Check a transient handoff against the credentials the client validated."""
+        return (
+            self._token is not None
+            and self._user_id == account_id
+            and self._username == username
+            and self._password == password
+        )
+
     async def _async_login_unlocked(self):
         timestamp = int(time.time() * 1000)
         form = {

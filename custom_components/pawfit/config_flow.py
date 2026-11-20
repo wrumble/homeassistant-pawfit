@@ -3,10 +3,12 @@
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .pawfit_api import PawfitApiClient
 from .exceptions import PawfitAuthenticationError, PawfitConnectionError, PawfitError
+from .session_handoff import stage_authenticated_client
 
 
 class PawfitConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -17,8 +19,10 @@ class PawfitConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             user_input["username"],
             user_input["password"],
             async_get_clientsession(self.hass),
+            now_fn=dt_util.now,
         )
-        return await client.async_login()
+        login = await client.async_login()
+        return str(login["userId"]), client
 
     async def async_step_user(self, user_input=None):
         return await self._credentials(user_input, False)
@@ -33,7 +37,7 @@ class PawfitConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
         if user_input is not None:
             try:
-                login = await self._login(user_input)
+                account_id, client = await self._login(user_input)
             except PawfitAuthenticationError:
                 errors["base"] = "invalid_auth"
             except PawfitConnectionError:
@@ -41,13 +45,13 @@ class PawfitConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except PawfitError:
                 errors["base"] = "invalid_response"
             else:
-                account_id = str(login["userId"])
                 if reauth:
                     entry = self._get_reauth_entry()
                     previous = entry.unique_id or entry.data.get("userId")
                     if previous is not None and str(previous) != account_id:
                         errors["base"] = "wrong_account"
                     else:
+                        stage_authenticated_client(self.hass, account_id, client)
                         return self.async_update_reload_and_abort(
                             entry,
                             data_updates={**user_input, "userId": account_id},
@@ -62,6 +66,7 @@ class PawfitConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         for e in self._async_current_entries()
                     ):
                         return self.async_abort(reason="already_configured")
+                    stage_authenticated_client(self.hass, account_id, client)
                     return self.async_create_entry(
                         title="Pawfit Account",
                         data={**user_input, "userId": account_id},

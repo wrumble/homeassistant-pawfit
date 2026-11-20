@@ -20,7 +20,7 @@ from .conftest import DOMAIN, MockConfigEntry
         (PawfitInvalidResponseError("safe"), "invalid_response"),
     ],
 )
-async def test_login_errors_are_distinct_and_retryable(hass, error, expected):
+async def test_login_errors_are_distinct_and_retryable(hass, pawfit, error, expected):
     with patch(
         "custom_components.pawfit.config_flow.PawfitConfigFlow._login",
         side_effect=error,
@@ -32,39 +32,28 @@ async def test_login_errors_are_distinct_and_retryable(hass, error, expected):
         )
     assert result["type"] == "form"
     assert result["errors"] == {"base": expected}
-    with (
-        patch(
-            "custom_components.pawfit.config_flow.PawfitConfigFlow._login",
-            return_value={"userId": "u1"},
-        ),
-        patch("custom_components.pawfit.async_setup_entry", return_value=True),
-    ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {"username": "a", "password": "new"}
-        )
-        await hass.async_block_till_done()
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "a", "password": "new"}
+    )
+    await hass.async_block_till_done()
     assert result["type"] == "create_entry"
     assert result["data"] == {"username": "a", "password": "new", "userId": "u1"}
     assert result["result"].unique_id == "u1"
 
 
-async def test_duplicate_legacy_account_is_not_created(hass):
+async def test_duplicate_legacy_account_is_not_created(hass, pawfit):
     entry = MockConfigEntry(domain=DOMAIN, data={"username": "A", "password": "b"})
     entry.add_to_hass(hass)
-    with patch(
-        "custom_components.pawfit.config_flow.PawfitConfigFlow._login",
-        return_value={"userId": "u1"},
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN,
-            context={"source": config_entries.SOURCE_USER},
-            data={"username": "a", "password": "b"},
-        )
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_USER},
+        data={"username": "a", "password": "b"},
+    )
     assert result["type"] == "abort"
     assert result["reason"] in ("already_configured", "single_instance_allowed")
 
 
-async def test_reauth_preserves_entry_and_rejects_different_account(hass):
+async def test_reauth_preserves_entry_and_rejects_different_account(hass, pawfit):
     entry = MockConfigEntry(
         domain=DOMAIN, data={"username": "a", "password": "old", "userId": "u1"}
     )
@@ -76,24 +65,17 @@ async def test_reauth_preserves_entry_and_rejects_different_account(hass):
     )
     assert result["step_id"] == "reauth_confirm"
     with patch(
-        "custom_components.pawfit.config_flow.PawfitConfigFlow._login",
+        "custom_components.pawfit.config_flow.PawfitApiClient.async_login",
         return_value={"userId": "other"},
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {"username": "a", "password": "wrong-account"}
         )
     assert result["errors"] == {"base": "wrong_account"}
-    with (
-        patch(
-            "custom_components.pawfit.config_flow.PawfitConfigFlow._login",
-            return_value={"userId": "u1"},
-        ),
-        patch.object(hass.config_entries, "async_reload", return_value=True),
-    ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {"username": "a", "password": "new"}
-        )
-        await hass.async_block_till_done()
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "a", "password": "new"}
+    )
+    await hass.async_block_till_done()
     assert result["type"] == "abort" and result["reason"] == "reauth_successful"
     assert entry.data["password"] == "new"
     assert len(hass.config_entries.async_entries(DOMAIN)) == 1
@@ -158,11 +140,10 @@ async def test_user_form_and_real_login_do_not_store_session_token(hass, pawfit)
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
     assert result["type"] == "form"
-    with patch("custom_components.pawfit.async_setup_entry", return_value=True):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {"username": "a", "password": "b"}
-        )
-        await hass.async_block_till_done()
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "a", "password": "b"}
+    )
+    await hass.async_block_till_done()
     assert result["type"] == "create_entry"
     assert result["data"] == {"username": "a", "password": "b", "userId": "u1"}
     assert pawfit.count("login") == 1

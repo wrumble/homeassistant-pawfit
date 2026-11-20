@@ -1,5 +1,7 @@
 """The Pawfit integration."""
 
+import logging
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
@@ -11,9 +13,11 @@ from .pawfit_api import PawfitApiClient
 from .device_tracker import PawfitDataUpdateCoordinator
 from .const import DOMAIN
 from .exceptions import PawfitAuthenticationError, PawfitError
+from .session_handoff import take_authenticated_client
 
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -21,17 +25,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Create the API client. Fork change: HA's shared HTTP session (upstream
     # opened a new one on every setup and never closed it), and HA's clock
     # for the daily request count.
-    client = PawfitApiClient(
-        entry.data["username"],
-        entry.data["password"],
-        async_get_clientsession(hass),
-        now_fn=dt_util.now,
-    )
+    client = take_authenticated_client(hass, entry.data)
+    if client is None:
+        client = PawfitApiClient(
+            entry.data["username"],
+            entry.data["password"],
+            async_get_clientsession(hass),
+            now_fn=dt_util.now,
+        )
 
     # Get trackers and create coordinator
     try:
         trackers = await client.async_get_trackers()
-    except PawfitAuthenticationError:
+    except PawfitAuthenticationError as error:
+        _LOGGER.warning("Pawfit setup login refused: %s", error)
         raise ConfigEntryAuthFailed("Pawfit credentials were rejected") from None
     except PawfitError:
         raise ConfigEntryNotReady("Pawfit account data is unavailable") from None
