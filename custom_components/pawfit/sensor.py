@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 
 from .const import DOMAIN
 from .helpers import battery_level, mode_remaining
-from .device_tracker import fix_time
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,7 +112,7 @@ class PawfitTimestampSensor(SensorEntity):
         data = self._coordinator.data.get(str(self._tracker_id), {})
 
         if self._kind == "last_update":
-            stamp = fix_time(data)
+            stamp = data.get("position_fix_time")
             return (
                 datetime.fromtimestamp(stamp, timezone.utc)
                 if stamp is not None

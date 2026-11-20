@@ -65,6 +65,36 @@ def coordinate(value, minimum, maximum):
         return None
 
 
+def _update_position(data, previous):
+    """Keep the newest usable position while accepting fresh collar telemetry."""
+    timestamp = fix_time(data)
+    latitude = coordinate(data.get("latitude"), -90, 90)
+    longitude = coordinate(data.get("longitude"), -180, 180)
+    accuracy = coordinate(data.get("accuracy"), 0, 10000000)
+    if latitude is None or longitude is None:
+        timestamp = None
+
+    last_timestamp = previous.get("position_fix_time")
+    cached = last_timestamp is not None and (
+        timestamp is None or timestamp < last_timestamp
+    )
+    if cached:
+        timestamp = last_timestamp
+        latitude, longitude, accuracy = (
+            previous[key] for key in ("latitude", "longitude", "accuracy")
+        )
+    elif timestamp is None:
+        latitude = longitude = accuracy = None
+
+    data.update(
+        latitude=latitude,
+        longitude=longitude,
+        accuracy=accuracy,
+        position_fix_time=timestamp,
+        position_cached=cached,
+    )
+
+
 class PawfitDataUpdateCoordinator(DataUpdateCoordinator):
     """Fetch every tracker's data on a fixed schedule, with a hard rate limit.
 
@@ -212,7 +242,7 @@ class PawfitDataUpdateCoordinator(DataUpdateCoordinator):
             self._locate_pending = {}
             self._locate_errors = []
             self._locate_baseline = {
-                str(t): fix_time((self.data or {}).get(str(t)))
+                str(t): (self.data or {}).get(str(t), {}).get("position_fix_time")
                 for t in self.tracker_ids
             }
             for tracker_id in self.tracker_ids:
@@ -266,10 +296,13 @@ class PawfitDataUpdateCoordinator(DataUpdateCoordinator):
                 return
             timed_out = force_timeout or time.monotonic() >= self._locate_deadline
             for tid in list(self._locate_pending):
-                fix = fix_time((location_data or {}).get(tid))
+                location = (location_data or {}).get(tid, {})
+                fix = location.get("position_fix_time")
                 baseline = self._locate_baseline.get(tid)
                 fresh = (
                     fix is not None
+                    and not location.get("position_cached")
+                    and not location.get("data_cached")
                     and (baseline is None or fix > baseline)
                     and fix >= self.locate_started - LOCATE_CLOCK_SLACK_SECONDS
                 )
@@ -408,6 +441,7 @@ class PawfitDataUpdateCoordinator(DataUpdateCoordinator):
         for tid, data in location_data.items():
             self._tracker_success[tid] = self._last_success
             data["data_cached"] = False
+            _update_position(data, (self.data or {}).get(tid, {}))
         # A partial account response must not erase another tracker's recent
         # position, nor keep it alive forever because a different pet responds.
         for tid, data in (self.data or {}).items():
@@ -521,7 +555,7 @@ class PawfitDeviceTracker(TrackerEntity):
             if self._coordinator.data
             else {}
         )
-        return fix_time(data)
+        return data.get("position_fix_time")
 
     def _is_stale(self) -> bool:
         fix = self._fix_time()
@@ -536,20 +570,20 @@ class PawfitDeviceTracker(TrackerEntity):
     def extra_state_attributes(self):
         """Fork change: when the tracker last reported its position."""
         fix = self._fix_time()
-        data_cached = (
-            (self._coordinator.data or {})
-            .get(str(self._tracker_id), {})
-            .get("data_cached", False)
-        )
+        data = (self._coordinator.data or {}).get(str(self._tracker_id), {})
+        data_cached = data.get("data_cached", False)
+        position_cached = data.get("position_cached", False)
         if fix is None:
             return {
                 "last_seen": None,
                 "position_age_minutes": None,
                 "stale": True,
                 "data_cached": data_cached,
+                "position_cached": position_cached,
             }
         return {
             "data_cached": data_cached,
+            "position_cached": position_cached,
             "last_seen": dt_util.utc_from_timestamp(fix).isoformat(),
             "position_age_minutes": max(0, int((time.time() - fix) // 60)),
             "stale": time.time() - fix > STALE_AFTER_SECONDS,
