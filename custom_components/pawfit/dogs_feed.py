@@ -256,7 +256,12 @@ def read_recorded_walk(hass, entity_id, registry_id, end):
     # History's general significant-state API has no row limit. Apply the limit in
     # the DB so rapid HA state writes cannot cause an unbounded result allocation.
     query = (
-        select(States.state, States.last_updated_ts, StateAttributes.shared_attrs)
+        select(
+            States.state,
+            States.last_updated_ts,
+            States.context_user_id_bin,
+            StateAttributes.shared_attrs,
+        )
         .select_from(States)
         .join(StatesMeta, States.metadata_id == StatesMeta.metadata_id)
         .outerjoin(
@@ -274,13 +279,14 @@ def read_recorded_walk(hass, entity_id, registry_id, end):
         rows = session.execute(query).all()
     points = deque(maxlen=MAX_POINTS)
     gap = True
-    for state, observed, serialized in reversed(rows):
+    for state, observed, user_id, serialized in reversed(rows):
         try:
             attrs = loads(serialized) if serialized else {}
         except (TypeError, JSONDecodeError):
             attrs = None
         if (
-            not isinstance(attrs, dict)
+            user_id is not None
+            or not isinstance(attrs, dict)
             or attrs.get("sofapilot_dog_id") != registry_id
             or state in ("unavailable", "unknown")
             or attrs.get("position_cached")

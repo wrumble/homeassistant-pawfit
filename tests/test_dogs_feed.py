@@ -202,3 +202,175 @@ async def test_six_hour_walk_never_exceeds_360_points(
     assert first["breakBefore"] and not last["breakBefore"]
     assert datetime.fromisoformat(first["recordedAt"]).timestamp() == start + 120
     assert datetime.fromisoformat(last["recordedAt"]).timestamp() == start + 361 * 60
+
+
+@pytest.mark.parametrize("remote", [None, "invalid address"])
+async def test_invalid_effective_peer_denied(
+    hass, setup_entry, hass_admin_user, remote
+):
+    from aiohttp import web
+    from aiohttp.test_utils import make_mocked_request
+
+    from custom_components.pawfit.dogs_feed import DogsView
+
+    request = make_mocked_request("GET", URL, headers=LAN).clone(remote=remote)
+    request["hass_user"] = hass_admin_user
+    with pytest.raises(web.HTTPForbidden):
+        await DogsView(hass).get(request)
+
+
+@pytest.fixture
+def large_account(pawfit, monkeypatch):
+    from .conftest import TRACKERS
+
+    for i in range(33):
+        tid = str(2000 + i)
+        monkeypatch.setitem(TRACKERS, tid, {"name": f"Dog {i}", "petId": i + 30})
+        pawfit.fix_times[tid] = int(datetime.now(timezone.utc).timestamp())
+        pawfit.finding[tid] = False
+        pawfit.timers[tid] = {}
+
+
+async def test_registration_bounds_and_missing_identity(
+    hass, large_account, setup_entry, hass_client, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from custom_components.pawfit.dogs_feed import register_dog
+
+    # Transient/unmanaged tracker without an established HA identity.
+    assert (
+        register_dog(SimpleNamespace(hass=hass, registry_entry=None), "Unknown") is None
+    )
+    client = await hass_client()
+    response = await client.get(URL, headers=LAN)
+    dogs = (await response.json())["dogs"]
+    assert len(dogs) == len({d["id"] for d in dogs}) == 32
+
+    registry = er.async_get(hass)
+    original = registry.async_get
+    entity_id = registry.async_get_entity_id("device_tracker", "pawfit", "11")
+    # Registry removal can precede the entity platform's queued unloading callback.
+    monkeypatch.setattr(
+        type(registry),
+        "async_get",
+        lambda self, key: None if key == entity_id else original(key),
+    )
+    response = await client.get(URL, headers=LAN)
+    remaining = (await response.json())["dogs"]
+    assert len(remaining) == 31 and all(d["name"] != "Tom" for d in remaining)
+
+
+async def test_retained_coordinator_fix_when_entity_joins_mid_outage(
+    hass, pawfit, setup_entry, hass_client
+):
+    from custom_components.pawfit.device_tracker import PawfitDeviceTracker
+    from custom_components.pawfit.dogs_feed import register_dog
+
+    coordinator = hass.data["pawfit"][setup_entry.entry_id]
+    tracker = PawfitDeviceTracker(coordinator.trackers[0], coordinator)
+    tracker.hass = hass
+    registry = er.async_get(hass)
+    tracker.entity_id = registry.async_get_entity_id("device_tracker", "pawfit", "11")
+    tracker.registry_entry = registry.async_get(tracker.entity_id)
+    dog = register_dog(tracker, "Tom")
+    dog.observe({**coordinator.data["1001"], "data_cached": True}, True)
+    client = await hass_client()
+    payload = await (await client.get(URL, headers=LAN)).json()
+    tom = next(d for d in payload["dogs"] if d["name"] == "Tom")
+    assert tom["fix"]["retained"] and tom["trail"] == []
+
+
+async def test_recorder_outage_retry_and_unusable_samples(
+    hass, pawfit, freezer, recorder_mock, setup_entry, hass_client, hass_admin_user
+):
+    from homeassistant.components.recorder.db_schema import StateAttributes
+    from homeassistant.components.recorder.util import session_scope
+    from homeassistant.core import Context
+    from pytest_homeassistant_custom_component.components.recorder.common import (
+        async_wait_recording_done,
+    )
+    from sqlalchemy import event, update
+    from sqlalchemy.exc import OperationalError
+
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id("device_tracker", "pawfit", "11")
+    dog_id = registry.async_get(entity_id).id
+    start = datetime.now(timezone.utc).replace(microsecond=0)
+    await hass.config_entries.async_unload(setup_entry.entry_id)
+    from datetime import timedelta
+
+    def emit(offset, *, fix=None, user=None, **attrs):
+        freezer.move_to(start + timedelta(seconds=offset))
+        stamp = start + timedelta(seconds=offset if fix is None else fix)
+        hass.states.async_set(
+            entity_id,
+            "not_home",
+            {
+                "latitude": 10,
+                "longitude": 20,
+                "gps_accuracy": 10,
+                "last_seen": stamp.isoformat(),
+                "sofapilot_dog_id": dog_id,
+                **attrs,
+            },
+            context=Context(user_id=user),
+        )
+
+    emit(1)
+    emit(2, fix=1, gps_accuracy=12)
+    emit(3, sofapilot_dog_id="different")
+    emit(4, latitude=95)
+    emit(5, last_seen="2026-02-31T10:00:00+00:00")
+    emit(6, marker="corrupt-me")
+    emit(7)
+    emit(8, user=hass_admin_user.id)
+    await async_wait_recording_done(hass)
+
+    def corrupt_one_row():
+        with session_scope(hass=hass) as session:
+            result = session.execute(
+                update(StateAttributes)
+                .where(StateAttributes.shared_attrs.like("%corrupt-me%"))
+                .values(shared_attrs="broken-json")
+            )
+            assert result.rowcount == 1
+            session.commit()
+
+    await recorder_mock.async_add_executor_job(corrupt_one_row)
+    hass.states.async_remove(entity_id)
+    freezer.tick(1)
+    # The collar restarts with regressed GPS; history still has the newer fix.
+    pawfit.fix_times["1001"] = start.timestamp()
+    assert await hass.config_entries.async_setup(setup_entry.entry_id)
+    await hass.async_block_till_done()
+    client = await hass_client()
+
+    async def snapshot():
+        payload = await (await client.get(URL, headers=LAN)).json()
+        return next(d for d in payload["dogs"] if d["id"] == dog_id)
+
+    def unavailable(conn, cursor, statement, params, context, many):
+        if (
+            "states_meta.entity_id =" in statement
+            and "state_attributes.shared_attrs" in statement
+        ):
+            raise OperationalError("synthetic recorder outage", {}, ConnectionError())
+
+    event.listen(recorder_mock.engine, "before_cursor_execute", unavailable)
+    try:
+        assert not (await snapshot())["fix"]["retained"]
+    finally:
+        event.remove(recorder_mock.engine, "before_cursor_execute", unavailable)
+    assert not (await snapshot())["fix"]["retained"]  # one-minute retry backoff
+    freezer.tick(61)
+    dog = await snapshot()
+    assert dog["fix"]["retained"]
+    assert [p["recordedAt"] for p in dog["trail"]] == [
+        (start + timedelta(seconds=i)).isoformat() for i in (1, 7)
+    ]
+    assert [p["breakBefore"] for p in dog["trail"]] == [True, True]
+    await advance(hass, freezer, 60, step=60)
+    assert (await snapshot())["fix"]["recordedAt"] == (
+        start + timedelta(seconds=7)
+    ).isoformat()
