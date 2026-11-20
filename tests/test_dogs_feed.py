@@ -190,7 +190,8 @@ async def test_six_hour_walk_never_exceeds_360_points(
     refresh = hass.auth.async_validate_access_token(hass_access_token)
     start = int(datetime.now(timezone.utc).timestamp())
     for i in range(361):
-        pawfit.fix_times["1001"] = start + 60 * (i + 1)
+        # Keep all 361 device times inside the cutoff despite scheduler sub-seconds.
+        pawfit.fix_times["1001"] = start + 60 * (i + 1) + 2
         await advance(hass, freezer, 60, step=60)
     token = hass.auth.async_create_access_token(refresh)
     response = await client.get(
@@ -200,8 +201,8 @@ async def test_six_hour_walk_never_exceeds_360_points(
     assert len(dog["trail"]) == 360
     first, last = dog["trail"][0], dog["trail"][-1]
     assert first["breakBefore"] and not last["breakBefore"]
-    assert datetime.fromisoformat(first["recordedAt"]).timestamp() == start + 120
-    assert datetime.fromisoformat(last["recordedAt"]).timestamp() == start + 361 * 60
+    assert datetime.fromisoformat(first["recordedAt"]).timestamp() == start + 122
+    assert datetime.fromisoformat(last["recordedAt"]).timestamp() == start + 361 * 60 + 2
 
 
 @pytest.mark.parametrize("remote", [None, "invalid address"])
